@@ -7,6 +7,16 @@ Pastikan Anda sudah melakukan persiapan berikut:
 
 Buka aplikasi terminal Anda (seperti Command Prompt, PowerShell, atau Terminal di MacOS/Linux).
 
+## Dokumentasi
+1. Tampilan streamlit
+![Screenshot 2025-06-20 011631](https://github.com/user-attachments/assets/26dbf4ba-66a7-4298-b258-4b8ed03802b2)
+
+2. Tampilan minio
+![Screenshot 2025-06-20 010605](https://github.com/user-attachments/assets/f7591484-52c7-4ec3-9126-359e27ee6318)
+
+3. Producer & Consumer
+![Screenshot 2025-06-20 004640](https://github.com/user-attachments/assets/a6df8f53-8e14-4139-9f4b-ea9660d00002)
+
 ---
 
 ### Langkah 1: Menjalankan Semua Layanan dengan Docker
