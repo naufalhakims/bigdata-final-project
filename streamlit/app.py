@@ -2,8 +2,10 @@ import streamlit as st
 import pandas as pd
 from minio import Minio
 import io
+import os
+import math
 
-# Konfigurasi MinIO
+# --- KONFIGURASI DAN FUNGSI PEMBANTU ---
 MINIO_CLIENT = Minio(
     "minio:9000",
     access_key="minioadmin",
@@ -11,112 +13,191 @@ MINIO_CLIENT = Minio(
     secure=False
 )
 BUCKET_NAME = "movies"
+PLACEHOLDER_IMAGE = "https://via.placeholder.com/200x300.png?text=Poster+Not+Found"
 
-# --- FUNGSI CERDAS UNTUK MEMBACA DATA ---
-@st.cache_data(show_spinner="Memuat data...")
-def load_data_from_minio(object_name):
-    """
-    Fungsi ini membaca data dari MinIO.
-    Ia otomatis mendeteksi apakah file tersebut .csv atau .parquet.
-    """
+# --- FUNGSI-FUNGSI UNTUK MEMUAT DATA ---
+
+@st.cache_data(show_spinner="Memuat data utama...")
+def load_main_data(object_name):
+    """Membaca data utama dari MinIO."""
     try:
         response = MINIO_CLIENT.get_object(BUCKET_NAME, object_name)
         file_data = io.BytesIO(response.read())
-        
         if object_name.endswith('.csv'):
             return pd.read_csv(file_data)
         elif object_name.endswith('.parquet'):
             return pd.read_parquet(file_data)
-        else:
-            st.error(f"Format file tidak didukung: {object_name}")
-            return None
+        return None
     finally:
         if 'response' in locals() and response:
             response.close()
             response.release_conn()
 
-# --- FUNGSI UNTUK MEMUAT HASIL SPARK (FOLDER) ---
 @st.cache_data(show_spinner="Memuat hasil model...")
 def load_spark_result(folder_path):
-    """
-    Fungsi ini membaca hasil Spark yang berupa folder berisi file Parquet.
-    """
+    """Membaca hasil Spark dari sebuah folder di MinIO."""
     try:
-        # Mencari file parquet pertama di dalam folder
         objects = MINIO_CLIENT.list_objects(BUCKET_NAME, prefix=folder_path, recursive=True)
         parquet_object = next((obj for obj in objects if obj.object_name.endswith('.parquet')), None)
-
         if parquet_object:
-            return load_data_from_minio(parquet_object.object_name)
+            return load_main_data(parquet_object.object_name)
         else:
-            st.error(f"Tidak ada file Parquet yang ditemukan di folder: {folder_path}")
             return pd.DataFrame()
     except Exception as e:
-        st.error(f"Gagal memuat hasil Spark dari {folder_path}: {e}")
+        st.error(f"Gagal memuat dari {folder_path}: {e}")
         return pd.DataFrame()
 
+@st.cache_data(show_spinner="Mengecek poster yang tersedia...")
+def get_available_posters(_bucket_name):
+    """Mendapatkan set berisi semua nama file poster yang ada di MinIO."""
+    poster_files = set()
+    try:
+        objects = MINIO_CLIENT.list_objects(_bucket_name, prefix="posters/", recursive=True)
+        for obj in objects:
+            if obj.object_name.endswith('.jpg'):
+                poster_files.add(os.path.basename(obj.object_name))
+    except Exception as e:
+        st.error(f"Gagal mengambil daftar poster dari MinIO: {e}")
+    return poster_files
 
-# --- TAMPILAN UTAMA APLIKASI ---
+# --- EKSEKUSI UTAMA APLIKASI ---
+
 st.set_page_config(layout="wide", page_title="Movie Recommendation App")
 st.title("🎬 Aplikasi Rekomendasi Film")
+
+# Muat semua data yang dibutuhkan di awal
+df_movies = load_main_data("final_movies_dataset.csv")
+available_posters = get_available_posters(BUCKET_NAME) 
+
+if df_movies is None or df_movies.empty:
+    st.error("Gagal memuat dataset utama. Pastikan proses ingesti sudah berjalan.")
+    st.stop()
 
 # --- Navigasi ---
 page = st.sidebar.selectbox("Pilih Halaman", ["Dashboard", "Movie Like This", "Rekomendasi per Usia"])
 
-# Memuat data utama sekali saja
-try:
-    df_movies = load_data_from_minio("final_movies_dataset.csv")
-except Exception as e:
-    st.error(f"Gagal memuat dataset utama dari MinIO. Pastikan proses ingesti sudah dijalankan. Error: {e}")
-    st.stop()
-
-
 # --- KONTEN HALAMAN ---
 if page == "Dashboard":
     st.header("Dashboard Film")
-    st.write("Menampilkan film yang tersedia dalam dataset. Ini adalah data statis yang dibaca dari MinIO.")
-    
-    if not df_movies.empty:
-        # Tampilkan dalam grid
-        st.success(f"Menampilkan 20 dari {len(df_movies)} film.")
-        cols = st.columns(5)
-        for index, row in df_movies.head(20).iterrows():
-            with cols[index % 5]:
-                # Pastikan ada poster_filename sebelum menampilkan
-                if pd.notna(row['poster_filename']):
-                    st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True)
-                else:
-                    st.image("https://via.placeholder.com/200x300.png?text=No+Poster", use_container_width=True)
-                st.caption(row['name'])
-    else:
-        st.warning("Tidak ada data film untuk ditampilkan.")
+    st.write("Jelajahi atau cari semua film yang tersedia dalam dataset.")
 
+    # --- KOTAK PENCARIAN ---
+    search_query = st.text_input("Cari film berdasarkan judul:", placeholder="Ketik judul film di sini...")
+
+    # Filter DataFrame berdasarkan input pencarian
+    if search_query:
+        df_filtered = df_movies[df_movies['name'].str.contains(search_query, case=False, na=False)]
+    else:
+        df_filtered = df_movies # Jika tidak ada input, tampilkan semua
+
+    # --- LOGIKA PAGINASI ---
+    if 'page_number' not in st.session_state:
+        st.session_state.page_number = 1
+
+    ITEMS_PER_PAGE = 20
+    total_movies = len(df_filtered)
+    total_pages = math.ceil(total_movies / ITEMS_PER_PAGE) if total_movies > 0 else 1
+    
+    # Pastikan nomor halaman tidak melebihi total halaman setelah filtering
+    if st.session_state.page_number > total_pages:
+        st.session_state.page_number = 1
+
+    start_idx = (st.session_state.page_number - 1) * ITEMS_PER_PAGE
+    end_idx = start_idx + ITEMS_PER_PAGE
+    df_page = df_filtered.iloc[start_idx:end_idx]
+
+    if not df_page.empty:
+        st.info(f"Menampilkan film {start_idx + 1} - {min(start_idx + len(df_page), total_movies)} dari {total_movies} hasil.")
+        
+        for i in range(0, len(df_page), 5):
+            cols = st.columns(5)
+            row_data = df_page.iloc[i:i+5]
+            for j, (_, row) in enumerate(row_data.iterrows()):
+                with cols[j]:
+                    if pd.notna(row['poster_filename']) and row['poster_filename'] in available_posters:
+                        st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True)
+                    else:
+                        st.image(PLACEHOLDER_IMAGE, use_container_width=True)
+                    
+                    date_val = int(row['date']) if pd.notna(row['date']) else 'N/A'
+                    st.caption(f"{row['name']} ({date_val})")
+    else:
+        st.warning("Tidak ada film yang cocok dengan pencarian Anda.")
+        
+    # --- Tombol Navigasi Paginasi ---
+    if total_movies > ITEMS_PER_PAGE:
+        st.write("---")
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col1:
+            if st.button("⬅️ Sebelumnya", disabled=(st.session_state.page_number <= 1)):
+                st.session_state.page_number -= 1
+                st.rerun()
+        with col2:
+            st.markdown(f"<div style='text-align: center;'>Halaman {st.session_state.page_number} dari {total_pages}</div>", unsafe_allow_html=True)
+        with col3:
+            if st.button("Berikutnya ➡️", disabled=(st.session_state.page_number >= total_pages)):
+                st.session_state.page_number += 1
+                st.rerun()
+
+# (Kode untuk halaman lain tidak diubah dan tetap sama)
 elif page == "Movie Like This":
+    # ... (kode dari versi sebelumnya)
     st.header("Temukan Film yang Mirip (Content-Based)")
-    st.info("Fitur ini sedang dalam pengembangan. Logika untuk menghitung kemiripan perlu ditambahkan.")
-    # TODO: Muat data dari 'ml_results/similarities'
-    # TODO: Buat dropdown untuk memilih film
-    # TODO: Hitung kemiripan kosinus dari vektor fitur dan tampilkan hasilnya
+    df_recs = load_spark_result("ml_results/content_recommendations/")
+
+    if not df_recs.empty:
+        movies_with_recs_ids = df_recs['id'].tolist()
+        df_selectable_movies = df_movies[df_movies['id'].isin(movies_with_recs_ids)]
+        movie_list = df_selectable_movies['name'].tolist()
+
+        selected_movie_name = st.selectbox(
+            "Pilih film (hanya film dengan hasil rekomendasi yang ditampilkan):", 
+            movie_list
+        )
+        
+        if selected_movie_name:
+            selected_movie_id = df_selectable_movies[df_selectable_movies['name'] == selected_movie_name]['id'].iloc[0]
+            recommendations = df_recs[df_recs['id'] == selected_movie_id]
+            
+            if not recommendations.empty:
+                rec_ids = recommendations['recommendations'].iloc[0]
+                st.subheader(f"Film yang mirip dengan '{selected_movie_name}':")
+                rec_movies_details = df_movies[df_movies['id'].isin(rec_ids)]
+                
+                cols = st.columns(len(rec_movies_details) if len(rec_movies_details) > 0 else 1)
+                for i, (_, row) in enumerate(rec_movies_details.iterrows()):
+                    with cols[i]:
+                        if pd.notna(row['poster_filename']) and row['poster_filename'] in available_posters:
+                            st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True)
+                        else:
+                            st.image(PLACEHOLDER_IMAGE, use_container_width=True)
+                        st.caption(row['name'])
+            else:
+                 st.warning("Tidak ditemukan rekomendasi untuk film ini.")
+    else:
+        st.error("Gagal memuat data rekomendasi. Pastikan Spark Job Batch telah berhasil dijalankan.")
+
 
 elif page == "Rekomendasi per Usia":
+    # ... (kode dari versi sebelumnya)
     st.header("Rekomendasi Berdasarkan Target Usia")
-    st.write("Prediksi target usia ini dihasilkan oleh Spark Job dan disimpan di MinIO.")
-    
     df_audience = load_spark_result("ml_results/audience_predictions/")
     
     if not df_audience.empty:
         audience_select = st.selectbox("Pilih Target Audiens", df_audience['audience_age'].unique())
-        
         filtered_movies = df_audience[df_audience['audience_age'] == audience_select]
         
         st.write(f"Menampilkan film untuk audiens: **{audience_select}**")
-        cols = st.columns(5)
-        for index, row in filtered_movies.head(10).iterrows():
-            with cols[index % 5]:
-                if pd.notna(row['poster_filename']):
-                    st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True)
-                else:
-                    st.image("https://via.placeholder.com/200x300.png?text=No+Poster", use_container_width=True)
-                st.caption(row['name'])
+        
+        for i in range(0, min(len(filtered_movies), 10), 5):
+            cols = st.columns(5)
+            row_data = filtered_movies.iloc[i:i+5]
+            for j, (_, row) in enumerate(row_data.iterrows()):
+                with cols[j]:
+                    if pd.notna(row['poster_filename']) and row['poster_filename'] in available_posters:
+                        st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True)
+                    else:
+                        st.image(PLACEHOLDER_IMAGE, use_container_width=True)
+                    st.caption(row['name'])
     else:
-        st.error("Gagal memuat data prediksi audiens. Pastikan Spark Job Batch telah berhasil dijalankan.")
+        st.error("Gagal memuat data prediksi audiens.")
