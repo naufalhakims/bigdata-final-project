@@ -1,5 +1,8 @@
-version: '3.8'
+# File: docker-compose.yml (Versi Final Otomatis Lengkap)
+
 services:
+  # --- 1. LAYANAN INFRASTRUKTUR INTI ---
+  
   zookeeper:
     image: confluentinc/cp-zookeeper:7.3.0
     container_name: zookeeper
@@ -36,6 +39,14 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     command: server /data --console-address ":9001"
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+
+  # --- 2. LAYANAN CLUSTER SPARK ---
+
   spark-master:
     build:
       context: ./spark
@@ -43,15 +54,10 @@ services:
     container_name: spark-master
     ports:
       - "8080:8080"
+      - "4040:4040"
     volumes:
       - ./spark:/opt/bitnami/spark/app
-    environment:
-      - SPARK_MODE=master
-      - SPARK_DRIVER_MEMORY=2g  # <-- TAMBAHKAN INI
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
+      - ./ingestion:/ingestion # Dibutuhkan oleh setup_and_batch_job
 
   spark-worker:
     build:
@@ -65,11 +71,8 @@ services:
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_MEMORY=5g  # <-- TAMBAHKAN INI
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
+
+  # --- 3. APLIKASI WEB FRONTEND ---
 
   streamlit:
     build:
@@ -80,5 +83,60 @@ services:
       - "8501:8501"
     volumes:
       - ./streamlit:/app
-    working_dir: /app
-    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+    depends_on:
+      - minio
+      - redis
+      - kafka
+
+  # --- 4. PEKERJA OTOMATIS (AUTOMATION SERVICES) ---
+
+  # Layanan ini hanya berjalan sekali untuk melakukan setup & training batch model
+  setup_and_batch_job:
+    build:
+      context: ./spark
+    container_name: setup_and_batch_job
+    volumes:
+      - ./spark:/opt/bitnami/spark/app
+      - ./ingestion:/ingestion
+      - ./wait-for-it.sh:/wait-for-it.sh
+    depends_on:
+      - minio
+      - spark-master
+    # Perintah ini akan: 1. Menunggu MinIO siap, 2. Menjalankan ingesti, 3. Menjalankan Spark Job Batch.
+    command: >
+      sh -c "chmod +x /wait-for-it.sh && \
+             ./wait-for-it.sh minio -- \
+             sh -c 'python /ingestion/upload_to_minio.py && \
+                    python /ingestion/set_minio_policy.py && \
+                    echo \"Ingesti Selesai, Memulai Spark Batch Job...\" && \
+                    spark-submit \
+                      --master spark://spark-master:7077 \
+                      --packages org.apache.hadoop:hadoop-aws:3.3.4 \
+                      /opt/bitnami/spark/app/batch/process_models.py'"
+    restart: on-failure # Coba lagi jika gagal
+
+  # Layanan ini berjalan terus-menerus untuk mengirim data streaming
+  kafka_producer:
+    build:
+      context: ./spark/stream # Menggunakan Dockerfile khusus dari folder stream
+      dockerfile: Dockerfile
+    container_name: kafka_producer
+    depends_on:
+      - kafka
+    restart: always # Akan selalu hidup kembali jika mati
+
+  # Layanan ini berjalan terus-menerus untuk memproses data streaming
+  spark_streaming_consumer:
+    build:
+      context: ./spark
+    container_name: spark_streaming_consumer
+    depends_on:
+      - spark-master
+      - kafka
+      - redis
+    command: >
+      spark-submit \
+        --master spark://spark-master:7077 \
+        --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0 \
+        /opt/bitnami/spark/app/stream/consumer.py
+    restart: always

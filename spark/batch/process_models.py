@@ -1,14 +1,21 @@
-from pyspark.sql import SparkSession, Window
-from pyspark.ml.feature import HashingTF, IDF, Tokenizer, StopWordsRemover, BucketedRandomProjectionLSH
-from pyspark.ml import Pipeline
-from pyspark.sql.functions import col, concat_ws, when, split, expr
-from pyspark.sql.types import LongType
+# File: spark/batch/process_models.py (Versi Final dengan Penyimpanan Aman)
+import pandas as pd
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, concat_ws, split
+from pyspark.ml.feature import CountVectorizer, RegexTokenizer, StopWordsRemover
+
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+import pickle
+import io
+import os
+from minio import Minio
+BUCKET_NAME = "movies"
 
 def get_spark_session():
-    """Membangun dan mengembalikan Spark Session dengan konfigurasi MinIO."""
     return SparkSession.builder \
-        .appName("MovieRecommendationLSH") \
-        .config("spark.driver.memory", "2g") \
+        .appName("MovieRecommendationSingleNode") \
+        .config("spark.driver.memory", "4g") \
         .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000") \
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
         .config("spark.hadoop.fs.s3a.secret.key", "minioadmin") \
@@ -20,63 +27,60 @@ def main():
     spark = get_spark_session()
     spark.sparkContext.setLogLevel("WARN")
 
-    print("Membaca data dari MinIO...")
-    df_movies = spark.read.csv("s3a://movies/final_movies_dataset.csv", header=True, inferSchema=True).withColumn("id", col("id").cast(LongType()))
-    print("Data CSV berhasil dibaca.")
+    movies_df = spark.read.csv("s3a://movies/final_movies_dataset.csv", header=True, inferSchema=True).limit(10000)
+    movies_df.cache()
+    print(f"Jumlah data yang akan diproses: {movies_df.count()} baris.")
+
+    # Include 'theme' in the selected columns and fill NaNs
+    movies_df = movies_df.select("id", "name", "description", "genre", "theme")
+    movies_df = movies_df.na.fill("", subset=["description", "genre", "theme"])
     
-    # --- MENGGUNAKAN SAMPEL 30% SESUAI PERMINTAAN ---
-    print("Menggunakan sampel data (30%) untuk proses training...")
-    df_movies = df_movies.sample(fraction=0.3, seed=42)
-    df_movies.cache()
-    print(f"Jumlah data yang akan diproses: {df_movies.count()} baris.")
-
-    potential_text_cols = ["description", "genre", "theme", "actors", "directors", "writers", "tagline", "studio"]
-    existing_text_cols = [c for c in potential_text_cols if c in df_movies.columns]
-    fill_null_map = {c: "" for c in existing_text_cols}
-    df_movies = df_movies.na.fill(fill_null_map)
-    print("Pembersihan data null selesai.")
-
-    print("Memulai proses 'Movie Like This' dengan LSH (parameter dilonggarkan)...")
-    df_movies_lsh = df_movies.withColumn("text_features", concat_ws(" ", *[col(c) for c in existing_text_cols]))
-
-    tokenizer = Tokenizer(inputCol="text_features", outputCol="words")
+    tokenizer = RegexTokenizer(inputCol="description", outputCol="words", pattern="\\W")
     remover = StopWordsRemover(inputCol="words", outputCol="filtered_words")
-    hashingTF = HashingTF(inputCol="filtered_words", outputCol="raw_features", numFeatures=2**16)
-    idf = IDF(inputCol="raw_features", outputCol="features")
+    movies_df = remover.transform(tokenizer.transform(movies_df))
+    # Concatenate 'filtered_words', 'genre', AND 'theme'
+    movies_df = movies_df.withColumn("tags", concat_ws(" ", movies_df["filtered_words"], movies_df["genre"], movies_df["theme"]))
+    movies_df = movies_df.withColumn("tags", split(movies_df["tags"], " "))
     
-    # --- PERUBAHAN PARAMETER UTAMA DI SINI ---
-    # bucketLength dinaikkan dari 2.0 -> 5.0 (memperlebar "lubang jaring")
-    # numHashTables diturunkan dari 3 -> 2 (mengurangi "lapisan jaring")
-    lsh = BucketedRandomProjectionLSH(inputCol="features", outputCol="hashes", bucketLength=5.0, numHashTables=2)
-    
-    pipeline = Pipeline(stages=[tokenizer, remover, hashingTF, idf, lsh])
-    
-    print("Fitting LSH pipeline...")
-    model = pipeline.fit(df_movies_lsh)
-    print("Pipeline fitting selesai.")
-    
-    featured_df = model.transform(df_movies_lsh)
-    
-    print("Mencari pasangan film yang mirip (approxSimilarityJoin)...")
-    # Threshold jarak juga kita naikkan sedikit dari 1.0 -> 2.0 untuk menerima pasangan yang 'cukup mirip'
-    df_recs = model.stages[-1].approxSimilarityJoin(featured_df, featured_df, 2.0, distCol="distance")
-    print("Pencarian pasangan terdekat selesai.")
+    print("Membuat vektor fitur dengan CountVectorizer...")
+    cv = CountVectorizer(inputCol="tags", outputCol="features", vocabSize=5000, minDF=2)
+    vectorized_df = cv.fit(movies_df).transform(movies_df)
 
-    # Olah hasil
-    df_recs_filtered = df_recs.select(col("datasetA.id").alias("id_A"), col("datasetB.id").alias("id_B"), "distance") \
-        .filter(col("id_A") < col("id_B"))
+    print("Mengumpulkan data ke Driver dengan toPandas()...")
+    pandas_df = vectorized_df.select("id", "name", "features").toPandas()
+    print("Data berhasil dikonversi ke Pandas DataFrame.")
 
-    window = Window.partitionBy("id_A").orderBy(col("distance").asc())
-    top_n_recs = df_recs_filtered.withColumn("rank", expr("row_number() over (partition by id_A order by distance asc)")).where(col("rank") <= 5)
+    n_rows = len(pandas_df)
+    print(f"Menghitung matriks kemiripan {n_rows}x{n_rows}...")
+    features_array = np.array([vec.toArray() for vec in pandas_df['features']])
+    cosine_sim = cosine_similarity(features_array)
+    print("Perhitungan matriks kemiripan selesai.")
+    
+    minio_client = Minio("minio:9000", access_key="minioadmin", secret_key="minioadmin", secure=False)
+    output_folder = "ml_results/sklearn_model/"
+    temp_dir = "/tmp" 
 
-    final_recs = top_n_recs.groupBy("id_A").agg(expr("collect_list(id_B) as recommendations"))
-    final_recs = final_recs.withColumnRenamed("id_A", "id")
-    
-    final_recs.write.mode("overwrite").parquet("s3a://movies/ml_results/content_recommendations")
-    print("Hasil rekomendasi 'Movie Like This' (LSH) berhasil disimpan ke MinIO.")
-    
+    try:
+        # Simpan movies_df.pkl
+        df_path = os.path.join(temp_dir, "movies_df.pkl")
+        pandas_df.to_pickle(df_path)
+        minio_client.fput_object(BUCKET_NAME, f"{output_folder}movies_df.pkl", df_path)
+        os.remove(df_path) 
+        print(f"✅ Berhasil menyimpan 'movies_df.pkl' ke MinIO.")
+        
+        # Simpan similarity_matrix.pkl
+        sim_path = os.path.join(temp_dir, "similarity_matrix.pkl")
+        with open(sim_path, 'wb') as f:
+            pickle.dump(cosine_sim, f)
+        minio_client.fput_object(BUCKET_NAME, f"{output_folder}similarity_matrix.pkl", sim_path)
+        os.remove(sim_path) # Hapus file sementara
+        print(f"✅ Berhasil menyimpan 'similarity_matrix.pkl' ke MinIO.")
+
+    except Exception as e:
+        print(f"❌ Gagal saat menyimpan hasil ke MinIO. Error: {e}")
+
     spark.stop()
-    print("Spark session dihentikan. Proses batch selesai.")
+    print("✅ Proses training dengan scikit-learn selesai.")
 
 if __name__ == "__main__":
     main()

@@ -2,3 +2,5 @@ streamlit
 pandas
 s3fs
 minio
+scikit-learn
+pyspark
