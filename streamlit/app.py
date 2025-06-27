@@ -180,44 +180,66 @@ elif page == "Streaming ETL Dashboard":
     if KAFKA_CONSUMER is None:
         st.error("Gagal terhubung ke Kafka. Tidak bisa menampilkan data streaming.")
     else:
+        # Inisialisasi session state jika belum ada
         if 'movie_batch' not in st.session_state: st.session_state.movie_batch = []
         if 'last_save_time' not in st.session_state: st.session_state.last_save_time = time.time()
         if 'total_processed' not in st.session_state: st.session_state.total_processed = 0
 
+        # Fungsi untuk menyimpan batch, tetap sama
         def save_batch_to_minio(data_list):
             if not data_list or MINIO_CLIENT is None: return
-            df = pd.DataFrame(data_list); csv_buffer = io.StringIO(); df.to_csv(csv_buffer, index=False)
+            df = pd.DataFrame(data_list)
+            csv_buffer = io.StringIO()
+            df.to_csv(csv_buffer, index=False)
             csv_bytes = csv_buffer.getvalue().encode('utf-8')
             filename = f"streamed_data/batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            MINIO_CLIENT.put_object("movies", filename, io.BytesIO(csv_bytes), len(csv_bytes))
-            st.toast(f"✅ Batch berisi {len(data_list)} film disimpan ke MinIO.")
+            try:
+                MINIO_CLIENT.put_object("movies", filename, io.BytesIO(csv_bytes), len(csv_bytes))
+                st.toast(f"✅ Batch berisi {len(data_list)} film disimpan ke MinIO.")
+            except Exception as e:
+                st.toast(f"Gagal menyimpan batch ke MinIO: {e}")
         
-        st.info("Memulai loop untuk menerima pesan dari Kafka. Halaman akan terus me-refresh.")
+        st.info("Memulai pengambilan data dari Kafka... Halaman akan auto-refresh.")
         
-        # Karena loop Kafka Consumer bersifat blocking, kita letakkan di dalam expander
-        # agar UI lain tetap bisa diakses jika perlu.
-        with st.expander("Klik untuk memulai/menghentikan streaming data", expanded=True):
-            placeholder = st.empty()
-            # Loop terbatas agar tidak berjalan selamanya dan membuat browser hang
-            for message in KAFKA_CONSUMER:
-                movie = message.value
-                st.session_state.movie_batch.append(movie)
-                st.session_state.total_processed += 1
-                
-                current_time = time.time()
-                if current_time - st.session_state.last_save_time >= 30: # Simpan setiap 30 detik
-                    save_batch_to_minio(st.session_state.movie_batch)
-                    st.session_state.movie_batch = []
-                    st.session_state.last_save_time = current_time
-                
-                with placeholder.container():
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Total Film Diterima", st.session_state.total_processed)
-                    col2.metric("Film di Batch Saat Ini", len(st.session_state.movie_batch))
-                    col3.metric("Film Terakhir Diterima", str(movie.get('name', 'N/A'))[:30]+"...")
+        placeholder = st.empty()
 
-                    st.subheader("Log Data Masuk (5 Terakhir)")
+        # Loop utama yang lebih ramah dengan Streamlit
+        while True:
+            # Tarik pesan dari Kafka dengan timeout (non-blocking)
+            # Ini akan mengambil semua pesan yang ada di antrian saat itu
+            raw_messages = KAFKA_CONSUMER.poll(timeout_ms=1000, max_records=100)
+            
+            if not raw_messages:
+                # Jika tidak ada pesan baru, hanya refresh UI dan tunggu
+                pass
+            else:
+                # Proses semua pesan yang diterima
+                for topic_partition, messages in raw_messages.items():
+                    for msg in messages:
+                        movie = msg.value
+                        st.session_state.movie_batch.append(movie)
+                        st.session_state.total_processed += 1
+            
+            # Cek apakah sudah waktunya menyimpan batch (setiap 30 detik)
+            current_time = time.time()
+            if current_time - st.session_state.last_save_time >= 30:
+                if st.session_state.movie_batch: # Hanya simpan jika ada data
+                    save_batch_to_minio(st.session_state.movie_batch)
+                    st.session_state.movie_batch = [] # Kosongkan batch setelah disimpan
+                st.session_state.last_save_time = current_time
+
+            # Update UI di placeholder
+            with placeholder.container():
+                col1, col2 = st.columns(2)
+                col1.metric("Total Film Diterima Sejak Halaman Dimuat", st.session_state.total_processed)
+                col2.metric("Film di Batch Saat Ini", len(st.session_state.movie_batch))
+                
+                st.subheader("Log Data Masuk (5 Terakhir)")
+                if st.session_state.movie_batch:
                     df_log = pd.DataFrame(st.session_state.movie_batch).tail(5)
-                    st.dataframe(df_log, use_container_width=True)
-                # Beri jeda kecil agar UI bisa "bernapas"
-                time.sleep(0.1)
+                    st.dataframe(df_log[['name', 'genre', 'rating']], use_container_width=True)
+                else:
+                    st.info("Menunggu data berikutnya dari Kafka...")
+            
+            # Beri jeda 1 detik sebelum iterasi berikutnya
+            time.sleep(1)
