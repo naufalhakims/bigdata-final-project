@@ -121,7 +121,7 @@ st.sidebar.info(f"Status MinIO: **{'Terhubung' if MINIO_CLIENT else 'Gagal'}**")
 st.sidebar.info(f"Status Kafka: **{'Terhubung' if KAFKA_CONSUMER else 'Gagal'}**")
 
 # --- TAMBAHAN: Tombol Reconnect ---
-if st.sidebar.button("Coba Sambungkan Ulang"):
+if KAFKA_CONSUMER is None:
     st.cache_resource.clear()
     st.rerun()
     
