@@ -1,79 +1,89 @@
-# File: streamlit/app.py (Versi Final Gabungan Semua Fitur)
-
 import streamlit as st
 import pandas as pd
 from minio import Minio
-import redis
+from kafka import KafkaConsumer
 import time
 import io
 import pickle
 import os
 import math
+import json
+from datetime import datetime
 import numpy as np
 
-# --- KONFIGURASI KONEKSI ---
-try:
-    MINIO_CLIENT = Minio("minio:9000", access_key="minioadmin", secret_key="minioadmin", secure=False)
-    BUCKET_NAME = "movies"
-except Exception as e:
-    st.error(f"Gagal menginisialisasi MinIO Client: {e}")
+# --- KONFIGURASI DAN KONEKSI (DENGAN CACHING) ---
+st.set_page_config(layout="wide", page_title="Movie Data Platform")
 
-try:
-    REDIS_CLIENT = redis.Redis(host='redis', port=6379, db=0, decode_responses=True)
-    REDIS_CLIENT.ping() # Cek koneksi
-    redis_status = "Terhubung"
-except Exception:
-    redis_status = "Gagal Terhubung"
-
-PLACEHOLDER_IMAGE = "https://via.placeholder.com/200x300.png?text=Poster+Not+Found"
-
-# --- FUNGSI-FUNGSI PEMUATAN DATA (DENGAN CACHING) ---
-
-@st.cache_data(show_spinner="Memuat model rekomendasi batch...")
-def load_model_from_minio(object_name):
-    """Membaca file model dari MinIO. Otomatis deteksi .pkl atau .npy."""
+@st.cache_resource
+def get_minio_client():
+    """Membuat koneksi ke MinIO dan menyimpannya di cache."""
     try:
-        response = MINIO_CLIENT.get_object(BUCKET_NAME, object_name)
-        data_stream = io.BytesIO(response.read())
-        data_stream.seek(0)
-        
-        if object_name.endswith('.pkl'):
-            return pickle.load(data_stream)
-        elif object_name.endswith('.npy'):
-            return np.load(data_stream)
-        return None
+        client = Minio("minio:9000", access_key="minioadmin", secret_key="minioadmin", secure=False)
+        client.bucket_exists("movies") # Cek koneksi
+        return client
     except Exception:
         return None
+
+@st.cache_resource
+def get_kafka_consumer():
+    """Membuat koneksi ke Kafka dan menyimpannya di cache."""
+    try:
+        consumer = KafkaConsumer(
+            'movie_views',
+            bootstrap_servers=['kafka:29092'],
+            auto_offset_reset='earliest',
+            enable_auto_commit=True,
+            group_id='streamlit-main-consumer-group',
+            value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+            consumer_timeout_ms=1000 # Timeout agar tidak block selamanya
+        )
+        return consumer
+    except Exception:
+        return None
+
+MINIO_CLIENT = get_minio_client()
+KAFKA_CONSUMER = get_kafka_consumer()
+BUCKET_NAME = "movies"
+PLACEHOLDER_IMAGE = "https://via.placeholder.com/200x300.png?text=Poster+Not+Found"
+
+# --- FUNGSI-FUNGSI PEMUATAN DATA (BATCH) ---
+@st.cache_data(show_spinner="Memuat model rekomendasi...")
+def load_model_from_minio(object_name):
+    """Membaca file model dari MinIO (.pkl atau .npy)."""
+    if MINIO_CLIENT is None: return None
+    try:
+        response = MINIO_CLIENT.get_object(BUCKET_NAME, object_name)
+        data = response.read()
+        if object_name.endswith('.pkl'): return pickle.loads(data)
+        elif object_name.endswith('.npy'): return np.load(io.BytesIO(data))
+    except Exception: return None
 
 @st.cache_data(show_spinner="Memuat dataset utama...")
 def load_main_csv_data(object_name="final_movies_dataset.csv"):
-    """Membaca data CSV utama dari MinIO untuk detail film."""
+    """Membaca data CSV utama dari MinIO."""
+    if MINIO_CLIENT is None: return pd.DataFrame()
     try:
         response = MINIO_CLIENT.get_object(BUCKET_NAME, object_name)
         return pd.read_csv(io.BytesIO(response.read()))
-    except Exception:
-        return pd.DataFrame()
-    finally:
-        if 'response' in locals() and response: response.close(); response.release_conn()
+    except Exception: return pd.DataFrame()
 
 @st.cache_data(show_spinner="Mengecek ketersediaan poster...")
-def get_available_posters(_bucket_name):
-    """Mendapatkan set nama file poster yang ada di MinIO."""
+def get_available_posters(_minio_client, _bucket_name):
+    """Mendapatkan set nama file poster yang valid."""
+    if _minio_client is None: return set()
     try:
-        return {os.path.basename(obj.object_name) for obj in MINIO_CLIENT.list_objects(_bucket_name, prefix="posters/", recursive=True) if obj.object_name.endswith('.jpg')}
-    except Exception:
-        return set()
+        return {os.path.basename(obj.object_name) for obj in _minio_client.list_objects(_bucket_name, prefix="posters/", recursive=True) if obj.object_name.endswith('.jpg')}
+    except Exception: return set()
 
-# --- INISIALISASI APLIKASI ---
-
-st.set_page_config(layout="wide", page_title="Movie Data Platform")
+# --- TAMPILAN UTAMA & NAVIGASI ---
 st.sidebar.title("🎬 Movie Data Platform")
-st.sidebar.info(f"Status Redis: **{redis_status}**")
+st.sidebar.info(f"Status MinIO: **{'Terhubung' if MINIO_CLIENT else 'Gagal'}**")
+st.sidebar.info(f"Status Kafka: **{'Terhubung' if KAFKA_CONSUMER else 'Gagal'}**")
 
-# --- NAVIGASI ---
+# Pindahkan pemuatan data ke dalam halaman masing-masing untuk efisiensi
 page = st.sidebar.selectbox(
     "Pilih Halaman",
-    ["Dashboard & Pencarian", "Rekomendasi Film (Batch)", "Live Feature Engineering (Streaming)"]
+    ["Dashboard & Pencarian", "Rekomendasi Film (Batch)", "Streaming ETL Dashboard"]
 )
 
 # ==============================================================================
@@ -82,7 +92,7 @@ page = st.sidebar.selectbox(
 if page == "Dashboard & Pencarian":
     st.header("Dashboard dan Pencarian Film")
     full_movies_df = load_main_csv_data()
-    available_posters = get_available_posters(BUCKET_NAME)
+    available_posters = get_available_posters(MINIO_CLIENT, BUCKET_NAME)
 
     if full_movies_df.empty:
         st.error("Data film utama tidak ditemukan. Pastikan proses ingesti sudah berjalan.")
@@ -126,12 +136,12 @@ if page == "Dashboard & Pencarian":
 # ==============================================================================
 elif page == "Rekomendasi Film (Batch)":
     st.header("Temukan Film yang Mirip (Model Batch)")
-    st.write("Model ini dibuat menggunakan Scikit-learn pada 5.000 data.")
+    st.write("Model ini dibuat menggunakan Scikit-learn pada 5.000-10.000 data.")
 
     model_movies_df = load_model_from_minio("ml_results/sklearn_model/movies_df.pkl")
     cosine_sim = load_model_from_minio("ml_results/sklearn_model/similarity_matrix.npy")
     full_movies_df = load_main_csv_data()
-    available_posters = get_available_posters(BUCKET_NAME)
+    available_posters = get_available_posters(MINIO_CLIENT, BUCKET_NAME)
 
     if model_movies_df is not None and cosine_sim is not None:
         movie_list = sorted(model_movies_df['name'].tolist())
@@ -150,7 +160,7 @@ elif page == "Rekomendasi Film (Batch)":
                 cols = st.columns(5)
                 for i, (_, row) in enumerate(final_recs_df.iterrows()):
                      with cols[i]:
-                        display_name = row.get('name_y', row['name_x']) 
+                        display_name = row.get('name_y', row['name_x'])
                         if pd.notna(row['poster_filename']) and row['poster_filename'] in available_posters:
                             st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True, caption=display_name)
                         else:
@@ -161,29 +171,53 @@ elif page == "Rekomendasi Film (Batch)":
         st.error("Gagal memuat model rekomendasi. Pastikan Spark Job (batch) telah berhasil dijalankan.")
 
 # ==============================================================================
-# HALAMAN 3: LIVE FEATURE ENGINEERING (STREAMING)
+# HALAMAN 3: STREAMING ETL DASHBOARD
 # ==============================================================================
-elif page == "Live Feature Engineering (Streaming)":
-    st.header("⚙️ Live Feature Engineering Dashboard")
-    st.write("Dashboard ini menampilkan log film yang diproses secara real-time oleh Spark. Setiap film diubah menjadi vektor fitur menggunakan model yang sudah dilatih.")
-    
-    log_placeholder = st.empty()
-    
-    while True:
-        if redis_status != "Terhubung":
-            with log_placeholder.container():
-                st.error("Koneksi ke Redis gagal. Tidak bisa menampilkan data live.")
-            break
-        try:
-            logs = REDIS_CLIENT.zrange("processed_movies_log", 0, -1, desc=True)
-            with log_placeholder.container():
-                st.subheader("Log Film yang Baru Diproses (20 Terakhir)")
-                if not logs:
-                    st.warning("Menunggu data masuk dari Kafka producer...")
-                else:
-                    for log_entry in logs:
-                        st.code(log_entry, language="text")
-        except Exception as e:
-            with log_placeholder.container():
-                st.error(f"Terjadi error saat mengambil data dari Redis: {e}")
-        time.sleep(2)
+elif page == "Streaming ETL Dashboard":
+    st.header("Streaming ETL: Kafka ke MinIO")
+    st.write("Aplikasi ini secara live menerima data dari Kafka, mengumpulkannya, dan menyimpannya sebagai file CSV per batch ke MinIO.")
+
+    if KAFKA_CONSUMER is None:
+        st.error("Gagal terhubung ke Kafka. Tidak bisa menampilkan data streaming.")
+    else:
+        if 'movie_batch' not in st.session_state: st.session_state.movie_batch = []
+        if 'last_save_time' not in st.session_state: st.session_state.last_save_time = time.time()
+        if 'total_processed' not in st.session_state: st.session_state.total_processed = 0
+
+        def save_batch_to_minio(data_list):
+            if not data_list or MINIO_CLIENT is None: return
+            df = pd.DataFrame(data_list); csv_buffer = io.StringIO(); df.to_csv(csv_buffer, index=False)
+            csv_bytes = csv_buffer.getvalue().encode('utf-8')
+            filename = f"streamed_data/batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            MINIO_CLIENT.put_object("movies", filename, io.BytesIO(csv_bytes), len(csv_bytes))
+            st.toast(f"✅ Batch berisi {len(data_list)} film disimpan ke MinIO.")
+        
+        st.info("Memulai loop untuk menerima pesan dari Kafka. Halaman akan terus me-refresh.")
+        
+        # Karena loop Kafka Consumer bersifat blocking, kita letakkan di dalam expander
+        # agar UI lain tetap bisa diakses jika perlu.
+        with st.expander("Klik untuk memulai/menghentikan streaming data", expanded=True):
+            placeholder = st.empty()
+            # Loop terbatas agar tidak berjalan selamanya dan membuat browser hang
+            for message in KAFKA_CONSUMER:
+                movie = message.value
+                st.session_state.movie_batch.append(movie)
+                st.session_state.total_processed += 1
+                
+                current_time = time.time()
+                if current_time - st.session_state.last_save_time >= 30: # Simpan setiap 30 detik
+                    save_batch_to_minio(st.session_state.movie_batch)
+                    st.session_state.movie_batch = []
+                    st.session_state.last_save_time = current_time
+                
+                with placeholder.container():
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total Film Diterima", st.session_state.total_processed)
+                    col2.metric("Film di Batch Saat Ini", len(st.session_state.movie_batch))
+                    col3.metric("Film Terakhir Diterima", str(movie.get('name', 'N/A'))[:30]+"...")
+
+                    st.subheader("Log Data Masuk (5 Terakhir)")
+                    df_log = pd.DataFrame(st.session_state.movie_batch).tail(5)
+                    st.dataframe(df_log, use_container_width=True)
+                # Beri jeda kecil agar UI bisa "bernapas"
+                time.sleep(0.1)

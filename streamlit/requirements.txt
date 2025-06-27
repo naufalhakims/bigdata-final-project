@@ -1,6 +1,9 @@
+# File: streamlit/requirements.txt (Versi Terlengkap Final)
 streamlit
 pandas
 s3fs
 minio
 scikit-learn
 pyspark
+redis
+kafka-python

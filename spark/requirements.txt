@@ -1,5 +1,6 @@
-numpy
 pandas
-minio
+numpy
 scikit-learn
-redis
+minio
+pyspark
+redis # Diperlukan untuk consumer.py
