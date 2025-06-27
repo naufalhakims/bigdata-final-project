@@ -1,4 +1,4 @@
-# 📚 Sistem Rekomendasi Film - Implementasi Big Data
+# 🎥 Sistem Rekomendasi Film - Implementasi Big Data
 
 Sebuah sistem rekomendasi film yang komprehensif dengan arsitektur big data modern, menampilkan pemrosesan real-time, machine learning, dan visualisasi.
 
