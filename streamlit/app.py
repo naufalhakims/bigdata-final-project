@@ -222,7 +222,7 @@ elif page == "Streaming ETL Dashboard":
             
             # Cek apakah sudah waktunya menyimpan batch (setiap 30 detik)
             current_time = time.time()
-            if current_time - st.session_state.last_save_time >= 30:
+            if current_time - st.session_state.last_save_time >= 120:
                 if st.session_state.movie_batch: # Hanya simpan jika ada data
                     save_batch_to_minio(st.session_state.movie_batch)
                     st.session_state.movie_batch = [] # Kosongkan batch setelah disimpan
@@ -242,4 +242,4 @@ elif page == "Streaming ETL Dashboard":
                     st.info("Menunggu data berikutnya dari Kafka...")
             
             # Beri jeda 1 detik sebelum iterasi berikutnya
-            time.sleep(1)
+            time.sleep(0.1)
