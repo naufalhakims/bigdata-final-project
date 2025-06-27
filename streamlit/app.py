@@ -74,13 +74,57 @@ def get_available_posters(_minio_client, _bucket_name):
     try:
         return {os.path.basename(obj.object_name) for obj in _minio_client.list_objects(_bucket_name, prefix="posters/", recursive=True) if obj.object_name.endswith('.jpg')}
     except Exception: return set()
+    
+# --- MODIFIKASI: FUNGSI BANTU UNTUK MENAMPILKAN DETAIL ---
+# Fungsi ini dibuat agar tidak ada duplikasi kode antara halaman dashboard dan rekomendasi
+def display_movie_details(container, movie_row):
+    """Menampilkan detail film di dalam container yang diberikan (seperti popover)."""
+    container.header(movie_row['name'])
+    
+    if pd.notna(movie_row['tagline']) and movie_row['tagline']:
+        container.caption(f"*{movie_row['tagline']}*")
+    
+    col1, col2 = container.columns(2)
+    
+    # Menampilkan Rating dan Durasi dengan penanganan nilai kosong
+    rating_text = f"**Rating:** {movie_row['rating']:.1f}/10 ⭐" if pd.notna(movie_row['rating']) else "**Rating:** N/A"
+    duration_text = f"**Durasi:** {int(movie_row['minute'])} menit" if pd.notna(movie_row['minute']) else "**Durasi:** N/A"
+    col1.markdown(rating_text)
+    col2.markdown(duration_text)
+
+    # Menampilkan Genre dan Tanggal Rilis
+    genre_text = f"**Genre:** {movie_row['genre']}" if pd.notna(movie_row['genre']) else "**Genre:** N/A"
+    date_text = f"**Rilis:** {movie_row['date']}" if pd.notna(movie_row['date']) else "**Rilis:** N/A"
+    col1.markdown(genre_text)
+    col2.markdown(date_text)
+    
+    container.markdown("---")
+    
+    # Menampilkan Aktor, Studio, dan Negara
+    if pd.notna(movie_row['actors']):
+        container.markdown(f"**Aktor:** {movie_row['actors']}")
+    if pd.notna(movie_row['studio']):
+        container.markdown(f"**Studio:** {movie_row['studio']}")
+    if pd.notna(movie_row['country']):
+        container.markdown(f"**Negara:** {movie_row['country']}")
+        
+    container.markdown("---")
+    
+    # Menampilkan Deskripsi
+    container.subheader("Deskripsi")
+    container.write(movie_row['description'] if pd.notna(movie_row['description']) else "Tidak ada deskripsi.")
+
 
 # --- TAMPILAN UTAMA & NAVIGASI ---
 st.sidebar.title("🎬 Movie Data Platform")
 st.sidebar.info(f"Status MinIO: **{'Terhubung' if MINIO_CLIENT else 'Gagal'}**")
 st.sidebar.info(f"Status Kafka: **{'Terhubung' if KAFKA_CONSUMER else 'Gagal'}**")
 
-# Pindahkan pemuatan data ke dalam halaman masing-masing untuk efisiensi
+# --- TAMBAHAN: Tombol Reconnect ---
+if st.sidebar.button("Coba Sambungkan Ulang"):
+    st.cache_resource.clear()
+    st.rerun()
+    
 page = st.sidebar.selectbox(
     "Pilih Halaman",
     ["Dashboard & Pencarian", "Rekomendasi Film (Batch)", "Streaming ETL Dashboard"]
@@ -116,10 +160,15 @@ if page == "Dashboard & Pencarian":
                 cols = st.columns(5)
                 for j, (_, row) in enumerate(df_page.iloc[i:i+5].iterrows()):
                     with cols[j]:
+                        # Tampilkan poster dengan caption sebagai fallback jika gambar tidak ada
                         if pd.notna(row['poster_filename']) and row['poster_filename'] in available_posters:
                             st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True, caption=row['name'])
                         else:
                             st.image(PLACEHOLDER_IMAGE, use_container_width=True, caption=row['name'])
+                        
+                        # --- MODIFIKASI: Tambahkan Popover untuk detail ---
+                        popover = st.popover("Lihat Detail", use_container_width=True)
+                        display_movie_details(popover, row) # Panggil fungsi bantu
         else:
             st.warning("Tidak ada film yang cocok dengan pencarian Anda.")
 
@@ -143,7 +192,7 @@ elif page == "Rekomendasi Film (Batch)":
     full_movies_df = load_main_csv_data()
     available_posters = get_available_posters(MINIO_CLIENT, BUCKET_NAME)
 
-    if model_movies_df is not None and cosine_sim is not None:
+    if model_movies_df is not None and cosine_sim is not None and not full_movies_df.empty:
         movie_list = sorted(model_movies_df['name'].tolist())
         selected_movie = st.selectbox("Pilih sebuah film untuk menemukan yang serupa:", movie_list)
 
@@ -155,24 +204,33 @@ elif page == "Rekomendasi Film (Batch)":
                 movie_indices = [i[0] for i in sim_scores[1:6]]
                 
                 recommended_movies_info = model_movies_df.iloc[movie_indices]
-                final_recs_df = pd.merge(recommended_movies_info, full_movies_df[['id', 'poster_filename', 'name']], on='id', how='left')
+                
+                # --- MODIFIKASI PENTING: Mengambil semua detail dari full_movies_df ---
+                # Sebelumnya hanya mengambil 'poster_filename', 'name'. Sekarang mengambil semua data
+                # berdasarkan 'id' yang direkomendasikan agar detailnya bisa ditampilkan.
+                final_recs_df = pd.merge(recommended_movies_info[['id']], full_movies_df, on='id', how='left')
 
                 cols = st.columns(5)
                 for i, (_, row) in enumerate(final_recs_df.iterrows()):
                      with cols[i]:
-                        display_name = row.get('name_y', row['name_x'])
                         if pd.notna(row['poster_filename']) and row['poster_filename'] in available_posters:
-                            st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True, caption=display_name)
+                            st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True, caption=row['name'])
                         else:
-                            st.image(PLACEHOLDER_IMAGE, use_container_width=True, caption=display_name)
+                            st.image(PLACEHOLDER_IMAGE, use_container_width=True, caption=row['name'])
+                        
+                        # --- MODIFIKASI: Tambahkan Popover untuk detail ---
+                        popover = st.popover("Lihat Detail", use_container_width=True)
+                        display_movie_details(popover, row) # Panggil fungsi bantu yang sama
+
             except Exception as e:
-                st.error(f"Terjadi error: {e}")
+                st.error(f"Terjadi error saat mengambil rekomendasi: {e}")
     else:
-        st.error("Gagal memuat model rekomendasi. Pastikan Spark Job (batch) telah berhasil dijalankan.")
+        st.error("Gagal memuat model rekomendasi atau dataset utama. Pastikan Spark Job (batch) telah berhasil dijalankan dan data tersedia di MinIO.")
 
 # ==============================================================================
 # HALAMAN 3: STREAMING ETL DASHBOARD
 # ==============================================================================
+# Bagian ini tidak diubah karena tidak ada permintaan.
 elif page == "Streaming ETL Dashboard":
     st.header("Streaming ETL: Kafka ke MinIO")
     st.write("Aplikasi ini secara live menerima data dari Kafka, mengumpulkannya, dan menyimpannya sebagai file CSV per batch ke MinIO.")
@@ -180,12 +238,10 @@ elif page == "Streaming ETL Dashboard":
     if KAFKA_CONSUMER is None:
         st.error("Gagal terhubung ke Kafka. Tidak bisa menampilkan data streaming.")
     else:
-        # Inisialisasi session state jika belum ada
         if 'movie_batch' not in st.session_state: st.session_state.movie_batch = []
         if 'last_save_time' not in st.session_state: st.session_state.last_save_time = time.time()
         if 'total_processed' not in st.session_state: st.session_state.total_processed = 0
 
-        # Fungsi untuk menyimpan batch, tetap sama
         def save_batch_to_minio(data_list):
             if not data_list or MINIO_CLIENT is None: return
             df = pd.DataFrame(data_list)
@@ -203,32 +259,25 @@ elif page == "Streaming ETL Dashboard":
         
         placeholder = st.empty()
 
-        # Loop utama yang lebih ramah dengan Streamlit
         while True:
-            # Tarik pesan dari Kafka dengan timeout (non-blocking)
-            # Ini akan mengambil semua pesan yang ada di antrian saat itu
             raw_messages = KAFKA_CONSUMER.poll(timeout_ms=1000, max_records=100)
             
             if not raw_messages:
-                # Jika tidak ada pesan baru, hanya refresh UI dan tunggu
                 pass
             else:
-                # Proses semua pesan yang diterima
                 for topic_partition, messages in raw_messages.items():
                     for msg in messages:
                         movie = msg.value
                         st.session_state.movie_batch.append(movie)
                         st.session_state.total_processed += 1
             
-            # Cek apakah sudah waktunya menyimpan batch (setiap 30 detik)
             current_time = time.time()
             if current_time - st.session_state.last_save_time >= 120:
-                if st.session_state.movie_batch: # Hanya simpan jika ada data
+                if st.session_state.movie_batch:
                     save_batch_to_minio(st.session_state.movie_batch)
-                    st.session_state.movie_batch = [] # Kosongkan batch setelah disimpan
+                    st.session_state.movie_batch = []
                 st.session_state.last_save_time = current_time
 
-            # Update UI di placeholder
             with placeholder.container():
                 col1, col2 = st.columns(2)
                 col1.metric("Total Film Diterima Sejak Halaman Dimuat", st.session_state.total_processed)
@@ -241,5 +290,4 @@ elif page == "Streaming ETL Dashboard":
                 else:
                     st.info("Menunggu data berikutnya dari Kafka...")
             
-            # Beri jeda 1 detik sebelum iterasi berikutnya
             time.sleep(0.1)
