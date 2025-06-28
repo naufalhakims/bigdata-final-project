@@ -184,8 +184,7 @@ if page == "Dashboard & Pencarian":
 # HALAMAN 2: REKOMENDASI FILM (BATCH)  
 # ==============================================================================  
 elif page == "Rekomendasi Film (Batch)":
-    st.header("Temukan Film yang Mirip (Model Batch)")
-    st.write("Model ini dibuat menggunakan Scikit-learn pada 5.000-10.000 data.")
+    st.header("Temukan Film yang Mirip")
 
     # Inisialisasi waktu refresh model  
     if 'last_model_refresh' not in st.session_state:
