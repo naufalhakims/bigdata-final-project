@@ -92,9 +92,9 @@ Platform streaming film menghadapi tantangan dalam memberikan rekomendasi film y
 2. **Kafka Producer**: Mengirimkan data ke Apache Kafka untuk streaming real-time (`producer_app/producer.py`).
 3. **Apache Kafka**: Message broker yang mendistribusikan data ke komponen lain.
 4. **Streamlit**: Dashboard untuk memantau data streaming real-time (`streamlit/app.py`).
-5. **Apache Spark**: Memproses data batch (`spark/batch/process_models.py`) dan streaming (`spark/stream/consumer.py`) untuk membangun model ML.
-6. **ML Models**: Model rekomendasi (misalnya Collaborative Filtering atau Content-based) dihasilkan dari pemrosesan Spark.
-7. **MinIO Storage**: Menyimpan data batch atau hasil pemrosesan (`ingestion/` untuk upload).
+5. **Apache Spark**: Memproses data batch (`spark/batch/process_models.py`) untuk membangun model ML.
+6. **ML Models**: Model rekomendasi dihasilkan dari pemrosesan Spark.
+7. **MinIO Storage**: Menyimpan data batch atau hasil pemrosesan.
 ---
 
 ### **Komponen Utama**
@@ -137,7 +137,6 @@ bigdata-final-project/
 │   ├── 📁 batch/                     # Proses batch (model/ETL)
 │   │   └── 📄 process_models.py      # Script untuk proses batch model
 │   ├── 📁 stream/                    # Proses streaming (real-time)
-│   │   ├── 📄 consumer.py            # Kafka consumer untuk streaming
 │   │   ├── 📄 run_setup_and_batch.py # Setup awal dan jalankan pipeline batch
 │   │   ├── 📄 Dockerfile             # Dockerfile untuk Spark streaming
 │   │   └── 📄 requirements.txt       # Dependencies Spark streaming
@@ -170,23 +169,39 @@ bigdata-final-project/
 | **RAM**            | 8GB+    | -                                                 |
 | **Storage**        | 10GB+   | -                                                 |
 
-### **🎬 Setup Manual**
+### **Menjalankan Program**
+#### **Docker**
+```
+docker-compose up -d --build
+```
+Program akan mulai pulling image docker yang dibutuhkan
 
-1. **Clone Repository**:
-   - Clone proyek dan navigasi ke direktori proyek.
+#### **Kafka**
+Melakukan streaming data dari producer
+![image](https://github.com/user-attachments/assets/5f157ecf-7069-475f-bb20-e6a0c1f620c8)
 
-2. **Setup Infrastructure dengan Docker**:
-   - Pastikan Docker dan Docker Compose terinstal.
-   - Jalankan: `docker-compose up --build`.
+#### **Streaming Data Dashboard**
+![image](https://github.com/user-attachments/assets/9132bef2-6623-436f-a418-0912d799afa7)
 
-3. **Jalankan Producer**:
-   - Navigasi ke `producer_app/` dan jalankan: `python producer.py`.
+#### **MinIO**
+![image](https://github.com/user-attachments/assets/b39c143a-f1f2-41b6-a334-86a8faa353b2)
 
-4. **Jalankan Spark Streaming**:
-   - Navigasi ke `spark/stream/` dan jalankan: `python consumer.py`.
+#### **Spark ML Modeling**
+Dilakukan training setiap 5 Menit
+![image](https://github.com/user-attachments/assets/7e36bbcc-9835-4469-b6ea-55833975022e)
 
-5. **Jalankan Dashboard**:
-   - Navigasi ke `streamlit/` dan jalankan: `streamlit run app.py`.
+#### **Landing Page**
+![image](https://github.com/user-attachments/assets/31cd312c-8ea8-40e3-8426-a7f9b4d16ca0)
+
+#### **Page Pencarian Film**
+![image](https://github.com/user-attachments/assets/04d2fa33-cdf6-4f81-9168-4ca4c6c87497)
+
+#### **Detail Film**
+![image](https://github.com/user-attachments/assets/420b7512-affa-4880-8906-fe6629191201)
+
+#### **Page Rekomendasi Film**
+![image](https://github.com/user-attachments/assets/9993d784-14e8-4e6b-a563-6d9f1fba34d9)
+
 
 ### **🎯 Akses Aplikasi**
 
