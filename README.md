@@ -74,27 +74,18 @@ Platform streaming film menghadapi tantangan dalam memberikan rekomendasi film y
 ## 🏗️ Arsitektur dan Data Flow
 
 ### **Arsitektur Sistem**
-[Dataset: final_movies_dataset.csv]
-↓
-[Kafka Producer (producer_app/producer.py)]
-↓
-[Apache Kafka]
-↙         ↘
-[Streamlit]    [Apache Spark (batch & stream)]
-↘         ↓
-[ML Models (Collaborative Filtering, Content-based)]
-↓
-[MinIO Storage]
+![Untitled Diagram-Page-1 drawio](https://github.com/user-attachments/assets/899ff789-71c3-40b9-ac30-06b4c169d9ce)
 
 
 #### **Penjelasan Arsitektur**
-1. **Dataset**: Data awal dari `final_movies_dataset.csv` di direktori `data/`.
-2. **Kafka Producer**: Mengirimkan data ke Apache Kafka untuk streaming real-time (`producer_app/producer.py`).
-3. **Apache Kafka**: Message broker yang mendistribusikan data ke komponen lain.
-4. **Streamlit**: Dashboard untuk memantau data streaming real-time (`streamlit/app.py`).
-5. **Apache Spark**: Memproses data batch (`spark/batch/process_models.py`) untuk membangun model ML.
-6. **ML Models**: Model rekomendasi dihasilkan dari pemrosesan Spark.
-7. **MinIO Storage**: Menyimpan data batch atau hasil pemrosesan.
+1. **Dataset**: Data awal berupa `final_movies_dataset.csv` dan file poster film yang terdapat di direktori `data/`.
+2. **Kafka Producer**: Mengirimkan data ke Apache Kafka untuk streaming real-time. Implementasi terdapat pada file `producer_app/producer.py`.
+3. **Apache Kafka**: Berfungsi sebagai message broker yang mendistribusikan data streaming ke komponen lain dalam sistem.
+4. **MinIO Storage**: Menyimpan data streaming dari Kafka, termasuk dataset dan file poster. Pengaturan kebijakan dan unggahan data dilakukan melalui skrip `ingestion/set_minio_policy.py` dan `ingestion/upload_to_minio.py`.
+5. **Apache Spark**: Memproses data batch untuk membangun model rekomendasi berbasis machine learning. Implementasi terdapat pada file `spark/run_setup_and_batch.py`.
+6. **ML Models**: Model rekomendasi dihasilkan dari pemrosesan data oleh Apache Spark. Model ini digunakan untuk memberikan rekomendasi film.
+7. **Streamlit**: Dashboard berbasis web untuk menampilkan data film, poster, dan rekomendasi berdasarkan model yang telah dilatih. Implementasi terdapat pada file `streamlit/app.py`.
+
 ---
 
 ### **Komponen Utama**
