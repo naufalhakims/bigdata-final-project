@@ -87,7 +87,7 @@ def display_movie_details(container, movie_row):
     col1, col2 = container.columns(2)
     
     # Menampilkan Rating dan Durasi dengan penanganan nilai kosong
-    rating_text = f"**Rating:** {movie_row['rating']:.1f}/10 ⭐" if pd.notna(movie_row['rating']) else "**Rating:** N/A"
+    rating_text = f"**Rating:** {movie_row['rating']:.1f}/5 ⭐" if pd.notna(movie_row['rating']) else "**Rating:** N/A"
     duration_text = f"**Durasi:** {int(movie_row['minute'])} menit" if pd.notna(movie_row['minute']) else "**Durasi:** N/A"
     col1.markdown(rating_text)
     col2.markdown(duration_text)
@@ -180,19 +180,36 @@ if page == "Dashboard & Pencarian":
             if col3.button("Berikutnya ➡️", disabled=(st.session_state.page_number >= total_pages)):
                 st.session_state.page_number += 1; st.rerun()
 
-# ==============================================================================
-# HALAMAN 2: REKOMENDASI FILM (BATCH)
-# ==============================================================================
+# ==============================================================================  
+# HALAMAN 2: REKOMENDASI FILM (BATCH)  
+# ==============================================================================  
 elif page == "Rekomendasi Film (Batch)":
     st.header("Temukan Film yang Mirip (Model Batch)")
     st.write("Model ini dibuat menggunakan Scikit-learn pada 5.000-10.000 data.")
 
+    # Inisialisasi waktu refresh model  
+    if 'last_model_refresh' not in st.session_state:
+        st.session_state.last_model_refresh = time.time()
+
+    # Bersihkan cache model jika sudah lebih dari 900 detik
+    if time.time() - st.session_state.last_model_refresh > 900:
+        st.cache_data.clear()
+        st.session_state.last_model_refresh = time.time()
+
+    # Tambahkan opsi manual refresh
+    with st.expander("🔄 Opsi Refresh Model"):
+        if st.button("Muat Ulang Model dari MinIO"):
+            st.cache_data.clear()
+            st.session_state.last_model_refresh = time.time()
+            st.success("Model berhasil dimuat ulang.")
+
+    # Muat model dan data
     model_movies_df = load_model_from_minio("ml_results/sklearn_model/movies_df.pkl")
     cosine_sim = load_model_from_minio("ml_results/sklearn_model/similarity_matrix.npy")
     full_movies_df = load_main_csv_data()
     available_posters = get_available_posters(MINIO_CLIENT, BUCKET_NAME)
 
-    if model_movies_df is not None and cosine_sim is not None and not full_movies_df.empty:
+    if model_movies_df is not None and cosine_sim is not None:
         movie_list = sorted(model_movies_df['name'].tolist())
         selected_movie = st.selectbox("Pilih sebuah film untuk menemukan yang serupa:", movie_list)
 
@@ -202,30 +219,22 @@ elif page == "Rekomendasi Film (Batch)":
                 idx = model_movies_df[model_movies_df['name'] == selected_movie].index[0]
                 sim_scores = sorted(list(enumerate(cosine_sim[idx])), key=lambda x: x[1], reverse=True)
                 movie_indices = [i[0] for i in sim_scores[1:6]]
-                
+
                 recommended_movies_info = model_movies_df.iloc[movie_indices]
-                
-                # --- MODIFIKASI PENTING: Mengambil semua detail dari full_movies_df ---
-                # Sebelumnya hanya mengambil 'poster_filename', 'name'. Sekarang mengambil semua data
-                # berdasarkan 'id' yang direkomendasikan agar detailnya bisa ditampilkan.
-                final_recs_df = pd.merge(recommended_movies_info[['id']], full_movies_df, on='id', how='left')
+                final_recs_df = pd.merge(recommended_movies_info, full_movies_df[['id', 'poster_filename', 'name']], on='id', how='left')
 
                 cols = st.columns(5)
                 for i, (_, row) in enumerate(final_recs_df.iterrows()):
-                     with cols[i]:
+                    with cols[i]:
+                        display_name = row.get('name_y', row['name_x'])
                         if pd.notna(row['poster_filename']) and row['poster_filename'] in available_posters:
-                            st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True, caption=row['name'])
+                            st.image(f"http://localhost:9000/{BUCKET_NAME}/posters/{row['poster_filename']}", use_container_width=True, caption=display_name)
                         else:
-                            st.image(PLACEHOLDER_IMAGE, use_container_width=True, caption=row['name'])
-                        
-                        # --- MODIFIKASI: Tambahkan Popover untuk detail ---
-                        popover = st.popover("Lihat Detail", use_container_width=True)
-                        display_movie_details(popover, row) # Panggil fungsi bantu yang sama
-
+                            st.image(PLACEHOLDER_IMAGE, use_container_width=True, caption=display_name)
             except Exception as e:
-                st.error(f"Terjadi error saat mengambil rekomendasi: {e}")
+                st.error(f"Terjadi error: {e}")
     else:
-        st.error("Gagal memuat model rekomendasi atau dataset utama. Pastikan Spark Job (batch) telah berhasil dijalankan dan data tersedia di MinIO.")
+        st.error("Gagal memuat model rekomendasi. Pastikan Spark Job (batch) telah berhasil dijalankan.")
 
 # ==============================================================================
 # HALAMAN 3: STREAMING ETL DASHBOARD
