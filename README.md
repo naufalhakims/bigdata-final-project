@@ -172,7 +172,7 @@ Melakukan streaming data dari producer
 ![image](https://github.com/user-attachments/assets/5f157ecf-7069-475f-bb20-e6a0c1f620c8)
 
 #### **Streaming Data Dashboard**
-![image](https://github.com/user-attachments/assets/9132bef2-6623-436f-a418-0912d799afa7)
+![image](https://github.com/user-attachments/assets/9951a7d8-2031-4591-bd89-1266aab3d619)
 
 #### **MinIO**
 ![image](https://github.com/user-attachments/assets/b39c143a-f1f2-41b6-a334-86a8faa353b2)
